@@ -120,7 +120,7 @@ Rules:
 
       try {
         const message = await client.messages.create({
-          model: "claude-haiku-4-20250514",  // Haiku 4.5 - fast & cheap
+          model: "claude-haiku-4-5-20251001",  // ✅ Correct - Latest Haiku",  // Haiku 4.5 - fast & cheap
           max_tokens: 1024,
           temperature: 0.3,  // Lower temperature for consistent scoring
           messages: [{
