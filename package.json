@@ -1,0 +1,16 @@
+{
+  "name": "call-signals-api",
+  "version": "1.0.0",
+  "description": "Backend API for Call Buying Signals Dashboard",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
