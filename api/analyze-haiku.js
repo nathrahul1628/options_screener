@@ -1,26 +1,11 @@
-// =============================================================================
-// VERCEL BACKEND - HAIKU ENDPOINT
-// File: /api/analyze-haiku.js
-// 
-// This endpoint receives pre-analyzed technical data from your Python script
-// and uses Claude Haiku 4.5 to provide final AI scoring and recommendations.
-// 
-// Cost: ~$0.02 per stock (67% cheaper than Sonnet)
-// Speed: ~3 seconds per stock
-// =============================================================================
-
-import Anthropic from '@anthropic-ai/sdk';
-
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+import Anthropic from "@anthropic-ai/sdk";
 
 export default async function handler(req, res) {
-  // Handle CORS
+  // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
+
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -29,177 +14,156 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { tickers, technical_data } = req.body;
-
-  if (!tickers || !Array.isArray(tickers)) {
-    return res.status(400).json({ 
-      error: 'Invalid request. Please provide tickers array.' 
-    });
-  }
-
-  if (!technical_data || !Array.isArray(technical_data)) {
-    return res.status(400).json({ 
-      error: 'Invalid request. Please provide technical_data array.' 
-    });
-  }
-
-  console.log(`🔍 Analyzing ${tickers.length} tickers with Claude Haiku 4.5...`);
-  console.log(`Cost estimate: $${(tickers.length * 0.02).toFixed(2)}`);
-
   try {
-    const signals = [];
-    
-    for (let i = 0; i < tickers.length; i++) {
-      const ticker = tickers[i];
-      const techData = technical_data[i];
-      
-      console.log(`📊 Analyzing ${ticker}...`);
-      
-      // Calculate 10% OTM strike
-      const currentPrice = techData.current_price;
-      const otmStrike = (currentPrice * 1.10).toFixed(2);
-      
-      // Calculate 3-4 month expiration
-      const today = new Date();
-      const expirationDate = new Date(today);
-      expirationDate.setMonth(today.getMonth() + 3);
-      const expiration = expirationDate.toLocaleDateString('en-US', { 
-        year: 'numeric', 
-        month: 'short', 
-        day: 'numeric' 
+    const { tickers, technical_data } = req.body;
+
+    if (!tickers || !Array.isArray(tickers) || tickers.length === 0) {
+      return res.status(400).json({ 
+        error: 'Invalid request', 
+        message: 'tickers array is required' 
       });
-      
-      // Create prompt with pre-calculated data (NO web searches needed)
-      const prompt = `You are an expert options trading analyst. Based on the technical data below, provide a final assessment for naked call buying.
+    }
 
-STOCK: ${ticker}
-CURRENT PRICE: $${currentPrice}
+    if (!technical_data || !Array.isArray(technical_data)) {
+      return res.status(400).json({ 
+        error: 'Invalid request', 
+        message: 'technical_data array is required' 
+      });
+    }
 
-TECHNICAL INDICATORS:
-- RSI (14-day): ${techData.rsi}
-- MACD: ${techData.macd.toFixed(4)}
-- MACD Signal: ${techData.macd_signal.toFixed(4)}
-- MACD Histogram: ${techData.macd_histogram.toFixed(4)}
-- 20-day SMA: $${techData.sma_20}
-- 50-day SMA: $${techData.sma_50}
-- Bollinger Upper: $${techData.bb_upper}
-- Bollinger Lower: $${techData.bb_lower}
-- Volume vs Average: ${techData.volume_ratio}x
-- Days Until Earnings: ${techData.days_until_earnings || 'Unknown (safe)'}
+    // Initialize Anthropic client
+    const anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
 
-PYTHON TECHNICAL SCORE: ${techData.technical_score}/100
-SCORING REASONS: ${techData.score_reasons.join('; ')}
+    // Build prompt for Claude
+    const prompt = buildPrompt(tickers, technical_data);
 
-ASSESSMENT CRITERIA:
-- Conservative scoring (8/10 minimum for BUY)
-- 10+ days until earnings required
-- Focus on momentum + trend alignment
-- Risk-adjusted recommendations
-
-Provide your assessment in EXACTLY this JSON format (no markdown, no extra text):
-{
-  "ticker": "${ticker}",
-  "signal": "STRONG BUY | BUY | HOLD | AVOID",
-  "score": 0-10,
-  "callOption": {
-    "strikePrice": "${otmStrike}",
-    "expiration": "${expiration}"
-  },
-  "recommendation": "Brief 1-2 sentence recommendation focusing on entry timing and setup quality",
-  "risks": ["risk 1", "risk 2", "risk 3"]
-}
-
-Rules:
-- STRONG BUY: 9-10 (excellent setup, all indicators aligned)
-- BUY: 7-8 (good setup, most indicators positive)
-- HOLD: 5-6 (mixed signals, wait for confirmation)
-- AVOID: 0-4 (poor setup or elevated risk)
-- Keep recommendation under 150 characters
-- List 2-3 specific risks
-- Be conservative - favor HOLD over BUY if uncertain`;
-
-      try {
-        const message = await client.messages.create({
-          model: "claude-haiku-4-5-20251001",  // ✅ Correct - Latest Haiku",  // Haiku 4.5 - fast & cheap
-          max_tokens: 1024,
-          temperature: 0.3,  // Lower temperature for consistent scoring
-          messages: [{
-            role: "user",
-            content: prompt
-          }]
-        });
-
-        const responseText = message.content[0].text;
-        
-        // Parse JSON response (strip any markdown if present)
-        const cleanedResponse = responseText
-          .replace(/```json\n?/g, '')
-          .replace(/```\n?/g, '')
-          .trim();
-        
-        const jsonMatch = cleanedResponse.match(/\{[\s\S]*\}/);
-        
-        if (jsonMatch) {
-          const analysis = JSON.parse(jsonMatch[0]);
-          
-          // Add technical score for reference
-          analysis.technicalScore = techData.technical_score;
-          analysis.company = techData.company || ticker;
-          
-          signals.push(analysis);
-          
-          console.log(`✓ ${ticker}: ${analysis.signal} (${analysis.score}/10)`);
-        } else {
-          console.error(`Failed to parse JSON for ${ticker}`);
-          signals.push({
-            ticker,
-            error: "Could not parse AI response",
-            signal: "ERROR",
-            score: 0
-          });
+    // Call Claude API
+    const message = await anthropic.messages.create({
+      model: "claude-3-5-haiku-20241022",
+      max_tokens: 2048,
+      temperature: 0.3,
+      messages: [
+        {
+          role: "user",
+          content: prompt
         }
+      ]
+    });
 
-      } catch (error) {
-        console.error(`Error analyzing ${ticker}:`, error.message);
-        signals.push({
-          ticker,
-          error: error.message,
-          signal: "ERROR",
-          score: 0
-        });
+    // Parse response
+    const responseText = message.content[0].text;
+    
+    // Try to parse as JSON
+    let signals;
+    try {
+      signals = JSON.parse(responseText);
+    } catch (parseError) {
+      // If not valid JSON, try to extract JSON from markdown
+      const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
+      if (jsonMatch) {
+        signals = JSON.parse(jsonMatch[1]);
+      } else {
+        throw new Error('Could not parse Claude response as JSON');
       }
     }
 
-    // Sort by AI score (highest first)
-    signals.sort((a, b) => (b.score || 0) - (a.score || 0));
-
-    const response = {
-      success: true,
-      timestamp: new Date().toISOString(),
-      model: "claude-haiku-4.5",
-      signals,
-      summary: {
-        total: signals.length,
-        strongBuy: signals.filter(s => s.signal === 'STRONG BUY').length,
-        buy: signals.filter(s => s.signal === 'BUY').length,
-        hold: signals.filter(s => s.signal === 'HOLD').length,
-        avoid: signals.filter(s => s.signal === 'AVOID').length,
-        errors: signals.filter(s => s.signal === 'ERROR').length
-      },
-      cost_estimate: `$${(tickers.length * 0.02).toFixed(2)}`
-    };
-
-    console.log('✅ Haiku analysis complete');
-    console.log(`Summary: ${response.summary.strongBuy} Strong Buy, ${response.summary.buy} Buy`);
-    
-    return res.status(200).json(response);
+    return res.status(200).json({
+      signals: signals.signals || signals,
+      analysis_timestamp: new Date().toISOString(),
+      model_used: "claude-3-5-haiku-20241022"
+    });
 
   } catch (error) {
-    console.error('❌ Analysis failed:', error);
-    return res.status(500).json({ 
-      error: 'Analysis failed', 
+    console.error('Error analyzing stocks:', error);
+    return res.status(500).json({
+      error: 'Analysis failed',
       message: error.message,
       timestamp: new Date().toISOString()
     });
   }
+}
+
+function buildPrompt(tickers, technical_data) {
+  const stocksInfo = technical_data.map(stock => {
+    const parts = [
+      `Ticker: ${stock.ticker}`,
+      `Price: $${safeNumber(stock.current_price, 2)}`,
+      `Technical Score: ${safeNumber(stock.technical_score, 0)}/100`,
+      `RSI: ${safeNumber(stock.rsi, 1)}`,
+      `MACD: ${safeNumber(stock.macd, 4)}`,
+      `Volume Ratio: ${safeNumber(stock.volume_ratio, 2)}x`,
+      `Reasons: ${stock.score_reasons?.join(', ') || 'N/A'}`
+    ];
+
+    // Add options data if available
+    if (stock.options) {
+      parts.push(`\nOptions Data:`);
+      parts.push(`  Strike: $${safeNumber(stock.options.strike, 2)}`);
+      parts.push(`  Expiration: ${stock.options.expiration || 'N/A'}`);
+      parts.push(`  IV: ${safeNumber(stock.options.implied_vol, 1)}%`);
+      parts.push(`  IV Rank: ${safeNumber(stock.options.iv_rank, 0)}/100`);
+      parts.push(`  Spread: $${safeNumber(stock.options.spread, 2)} (${safeNumber(stock.options.spread_pct, 1)}%)`);
+      parts.push(`  Volume: ${safeNumber(stock.options.volume, 0)}`);
+      parts.push(`  Open Interest: ${safeNumber(stock.options.open_interest, 0)}`);
+      
+      if (stock.options.delta !== null && stock.options.delta !== undefined) {
+        parts.push(`  Delta: ${safeNumber(stock.options.delta, 2)}`);
+      }
+      if (stock.options.theta !== null && stock.options.theta !== undefined) {
+        parts.push(`  Theta: $${safeNumber(stock.options.theta, 2)}/day`);
+      }
+    }
+
+    return parts.join('\n');
+  }).join('\n\n---\n\n');
+
+  return `You are an expert options trader analyzing call option opportunities.
+
+Analyze these stocks and provide a JSON response with trading signals.
+
+STOCKS DATA:
+${stocksInfo}
+
+INSTRUCTIONS:
+1. Evaluate each stock's potential for call options
+2. Consider: technical score, momentum (RSI, MACD), volume, and options data if provided
+3. Rate each 0-10 (10 = strongest buy signal)
+4. Provide signal: "STRONG BUY" (9-10), "BUY" (7-8), "HOLD" (5-6), or "AVOID" (0-4)
+5. Recommend strike price (10% OTM) and expiration (3 months)
+6. Give brief reasoning (max 100 words)
+
+If options data is provided:
+- Prefer stocks with IV < 40% (not overpriced)
+- Prefer IV Rank < 50 (good entry timing)
+- Prefer tight spreads < 3% (liquid)
+- Prefer high open interest > 1,000 (tradeable)
+
+REQUIRED JSON FORMAT:
+{
+  "signals": [
+    {
+      "ticker": "AAPL",
+      "score": 8,
+      "signal": "BUY",
+      "callOption": {
+        "strikePrice": "245.50",
+        "expiration": "Feb 21, 2026",
+        "reasoning": "Consider IV and liquidity if options data provided"
+      },
+      "recommendation": "Brief analysis here (max 100 words)"
+    }
+  ]
+}
+
+Respond with ONLY valid JSON. No markdown, no code blocks, just pure JSON.`;
+}
+
+// Helper function to safely format numbers
+function safeNumber(value, decimals = 2) {
+  if (value === null || value === undefined || isNaN(value)) {
+    return 'N/A';
+  }
+  return Number(value).toFixed(decimals);
 }
